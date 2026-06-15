@@ -1,0 +1,445 @@
+"use client";
+import { useState, useEffect, useRef } from "react";
+
+/* ---------- default questionnaire ---------- */
+const DEFAULTS = [
+  { id: "s_snapshot", title: "Snapshot", q: [
+    { id: "q_department", label: "Department", hint: "", type: "text", ph: "e.g. Procurement" },
+    { id: "q_team", label: "Team or sub-unit", hint: "", type: "text", ph: "e.g. Vendor Management" },
+    { id: "q_people", label: "Who we spoke to", hint: "roles, not names", type: "text", ph: "e.g. Procurement lead, 2 buyers" },
+    { id: "q_size", label: "Team size", hint: "", type: "text", ph: "e.g. 8 people" }]},
+  { id: "s_work", title: "What the team does", q: [
+    { id: "q_responsibilities", label: "What does this team own day to day?", hint: "", type: "textarea", ph: "Core responsibilities and outputs…", wide: true },
+    { id: "q_week", label: "Walk us through a typical week — where does the workload go?", hint: "", type: "textarea", ph: "The rhythm of the work, busy points…", wide: true },
+    { id: "q_timesink", label: "Which tasks eat the most time?", hint: "", type: "textarea", ph: "The things that take hours…" },
+    { id: "q_seasonal", label: "Anything that spikes at certain times?", hint: "month-end, quarter-end", type: "textarea", ph: "Predictable peaks in workload…" }]},
+  { id: "s_manual", title: "Repetitive & manual work", q: [
+    { id: "q_repetitive", label: "What do you do over and over, the same way each time?", hint: "the gold for automation", type: "textarea", ph: "Routine, rules-based, predictable tasks…", wide: true },
+    { id: "q_rekey", label: "Where are you copying or re-typing data between systems?", hint: "", type: "textarea", ph: "Moving data from A to B by hand…" },
+    { id: "q_offsystem", label: "What's still done in spreadsheets, email, or on paper?", hint: "", type: "textarea", ph: "Work that lives outside the main systems…" }]},
+  { id: "s_pain", title: "Pain points & bottlenecks", q: [
+    { id: "q_frustration", label: "What's the most frustrating part of the job?", hint: "", type: "textarea", ph: "Where people sigh and roll their eyes…", wide: true },
+    { id: "q_delays", label: "Where do delays happen — what are you waiting on?", hint: "", type: "textarea", ph: "Hand-offs, approvals, other teams…" },
+    { id: "q_errors", label: "Where do mistakes or rework happen most?", hint: "", type: "textarea", ph: "What gets done twice, or wrong…" },
+    { id: "q_magic", label: "If you had a magic assistant, what would you hand off first?", hint: "", type: "textarea", ph: "The dream delegation…", wide: true }]},
+  { id: "s_tools", title: "Tools & data", q: [
+    { id: "q_software", label: "What software and systems do you use daily?", hint: "", type: "textarea", ph: "SAP, Outlook, Excel, internal portal…" },
+    { id: "q_integration", label: "Do your systems talk to each other, or is there manual handoff?", hint: "", type: "textarea", ph: "Where the chain breaks and goes manual…" },
+    { id: "q_data", label: "Where does your important data live?", hint: "", type: "textarea", ph: "Systems, shared drives, inboxes…" },
+    { id: "q_docs", label: "What documents do you handle most?", hint: "types & rough volume", type: "textarea", ph: "RFQs, contracts, invoices, datasheets…" }]},
+  { id: "s_decisions", title: "Decisions, approvals & reporting", q: [
+    { id: "q_approvals", label: "What approvals run through this team — who signs off, how long?", hint: "", type: "textarea", ph: "The approval chain and its delays…", wide: true },
+    { id: "q_reports", label: "What reports do you produce — for whom, how often?", hint: "", type: "textarea", ph: "Recurring reports and who consumes them…" },
+    { id: "q_decisions", label: "What decisions rely on data you gather by hand first?", hint: "", type: "textarea", ph: "Pulling numbers before you can decide…" }]},
+  { id: "s_comms", title: "Communication", q: [
+    { id: "q_email", label: "How much time goes to email, chat and follow-ups?", hint: "", type: "textarea", ph: "Chasing, replying, coordinating…" },
+    { id: "q_faq", label: "What questions do you answer again and again?", hint: "internal or to customers", type: "textarea", ph: "The same questions on repeat…" }]},
+  { id: "s_measure", title: "Measurement & ambition", q: [
+    { id: "q_kpis", label: "How is this team's success measured?", hint: "KPIs", type: "textarea", ph: "Cycle time, cost, SLA, accuracy…" },
+    { id: "q_2x", label: "What would 'twice as good' look like here?", hint: "", type: "textarea", ph: "If a constraint vanished…" }]},
+  { id: "s_ready", title: "Readiness & constraints", q: [
+    { id: "q_compliance", label: "Any data sensitivity, compliance or security constraints?", hint: "", type: "textarea", ph: "Regulated data, privacy, approvals…", wide: true },
+    { id: "q_existing", label: "Already using any automation or AI tools?", hint: "", type: "textarea", ph: "What's in place today…" },
+    { id: "q_openness", label: "How open is the team to changing how they work?", hint: "", type: "textarea", ph: "Appetite for change…" }]},
+];
+
+const K_CFG = "tabany:cfg", K_RECS = "tabany:recs", K_DRAFT = "tabany:draft";
+
+/* ---------- pure helpers ---------- */
+const clone = (x) => JSON.parse(JSON.stringify(x));
+const rid = () => Math.random().toString(36).slice(2, 8);
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+const lsDel = (k) => { try { localStorage.removeItem(k); } catch {} };
+
+function buildPrompt(cfg, answers, notes) {
+  const lines = [];
+  cfg.forEach((sec) => sec.q.forEach((q) => { const v = (answers[q.id] || "").trim(); if (v) lines.push(`${q.label.replace(/\s+/g, " ")}: ${v}`); }));
+  let block = lines.join("\n");
+  if ((notes || "").trim()) block += `\n\nADDITIONAL NOTES FROM THE INTERVIEW:\n${notes.trim()}`;
+  return `You are an AI automation consultant for tabany, analyzing a discovery interview with one department. From the notes, identify concrete, specific AI / automation opportunities for this team.
+
+INTERVIEW NOTES
+${block}
+
+Return ONLY valid JSON (no markdown, no code fences, no commentary) in exactly this shape:
+{
+ "departmentSummary":"one sentence on where AI helps this team most",
+ "opportunities":[
+  {"title":"Short product-style name e.g. RFQ Comparison Agent","what":"1-2 sentences on what it does for them","addresses":["specific pain point or task it removes"],"approach":"one short line on how it would be built","impact":"High|Medium|Low","complexity":"High|Medium|Low","timeSaved":"range with unit e.g. 10-15 hours/week"}
+ ],
+ "overall":{"impact":"High|Medium|Low","complexity":"High|Medium|Low","timeSaved":"combined range","priority":"one sentence: which to start with and why"}
+}
+Rules: 3 to 5 opportunities, best first. Be specific to THIS team's tools and pains — never generic. impact/complexity must be exactly High, Medium or Low. Keep every text field tight.`;
+}
+function parseJSON(t) {
+  t = (t || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+  const s = t.indexOf("{"), e = t.lastIndexOf("}");
+  if (s > -1 && e > -1) t = t.slice(s, e + 1);
+  return JSON.parse(t);
+}
+const answeredCount = (cfg, answers) => { let n = 0; cfg.forEach((s) => s.q.forEach((q) => { if ((answers[q.id] || "").trim()) n++; })); return n; };
+const deptOf = (r) => { const d = r.snapshot.find((x) => x.id === "q_department"); if (d && d.value) return d.value; const f = r.snapshot.find((x) => x.value); return f ? f.value : "Untitled discovery"; };
+const teamOf = (r) => { const t = r.snapshot.find((x) => x.id === "q_team"); return t ? t.value : ""; };
+const impClass = (v) => { const k = (v || "").toLowerCase(); return k === "high" ? "hi" : k === "medium" ? "me" : "lo"; };
+const cpxClass = (v) => { const k = (v || "").toLowerCase(); return k === "low" ? "hi" : k === "medium" ? "me" : "hard"; };
+const gaugeCol = (v, c) => { const k = (v || "").toLowerCase(); if (c) return k === "low" ? "var(--good)" : k === "medium" ? "var(--warn)" : "var(--bad)"; return k === "high" ? "var(--good)" : k === "medium" ? "var(--warn)" : "var(--muted)"; };
+function recToMd(r) {
+  const a = r.analysis; let s = `# AI Opportunity Analysis — ${deptOf(r)}${teamOf(r) ? ` (${teamOf(r)})` : ""}\n\n${a.departmentSummary || ""}\n\nOverall — Impact: ${a.overall && a.overall.impact} · Complexity: ${a.overall && a.overall.complexity} · Time saved: ${a.overall && a.overall.timeSaved}\n`;
+  if (a.overall && a.overall.priority) s += `Start here: ${a.overall.priority}\n`;
+  s += `\n## AI Opportunities\n`;
+  (a.opportunities || []).forEach((o, i) => { s += `\n${i + 1}. ${o.title} — ${o.what}\n`; if (o.addresses && o.addresses.length) s += `   Addresses: ${o.addresses.join("; ")}\n`; if (o.approach) s += `   Approach: ${o.approach}\n`; s += `   Impact: ${o.impact} · Complexity: ${o.complexity} · Time saved: ${o.timeSaved}\n`; });
+  return s;
+}
+
+const GearIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+  </svg>
+);
+
+export default function App() {
+  const [view, setView] = useState("interview");
+  const [cfg, setCfg] = useState(() => clone(DEFAULTS));
+  const [answers, setAnswers] = useState({});
+  const [notes, setNotes] = useState("");
+  const [recs, setRecs] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
+  const [collapsed, setCollapsed] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [genError, setGenError] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [toast, setToast] = useState("");
+  const [hydrated, setHydrated] = useState(false);
+  const fileRef = useRef(null);
+
+  /* load saved data */
+  useEffect(() => {
+    try { const c = lsGet(K_CFG); if (c) { const p = JSON.parse(c); if (Array.isArray(p) && p.length) setCfg(p); } } catch {}
+    try { const r = lsGet(K_RECS); if (r) { const p = JSON.parse(r); if (Array.isArray(p)) setRecs(p); } } catch {}
+    try { const d = lsGet(K_DRAFT); if (d) { const p = JSON.parse(d); setAnswers(p.answers || {}); setNotes(p.notes || ""); } } catch {}
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => { if (hydrated) lsSet(K_CFG, JSON.stringify(cfg)); }, [cfg, hydrated]);
+  useEffect(() => { if (hydrated) lsSet(K_RECS, JSON.stringify(recs)); }, [recs, hydrated]);
+  useEffect(() => {
+    if (!hydrated) return;
+    const t = setTimeout(() => lsSet(K_DRAFT, JSON.stringify({ answers, notes })), 300);
+    return () => clearTimeout(t);
+  }, [answers, notes, hydrated]);
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 2200); return () => clearTimeout(t); }, [toast]);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") setSettingsOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  function go(v) { setView(v); window.scrollTo({ top: 0, behavior: "smooth" }); }
+  const setAns = (id, v) => setAnswers((a) => ({ ...a, [id]: v }));
+  const toggleSec = (id) => setCollapsed((c) => ({ ...c, [id]: !c[id] }));
+
+  async function generate() {
+    if (loading) return;
+    if (answeredCount(cfg, answers) === 0) { setToast("Answer at least one question first"); return; }
+    setLoading(true); setGenError(""); go("analysis");
+    try {
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: buildPrompt(cfg, answers, notes) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+      const analysis = parseJSON(data.text);
+      if (!analysis.opportunities || !analysis.opportunities.length) throw new Error("empty");
+      const snapshot = [];
+      cfg.forEach((sec) => sec.q.forEach((q) => { const v = (answers[q.id] || "").trim(); if (v) snapshot.push({ id: q.id, label: q.label, value: v }); }));
+      const rec = { id: String(Date.now()), createdAt: Date.now(), snapshot, notes, analysis };
+      setRecs((r) => [rec, ...r]); setSelectedId(rec.id);
+      setAnswers({}); setNotes(""); lsDel(K_DRAFT);
+      setLoading(false);
+    } catch (e) {
+      setLoading(false);
+      setGenError(e.message === "empty"
+        ? "The model returned no opportunities — add a little more detail and try again."
+        : "Couldn't generate the analysis. " + (e.message || "") + " (If you just deployed, make sure ANTHROPIC_API_KEY is set on the server.)");
+    }
+  }
+
+  function clearAnswers() {
+    if (!answeredCount(cfg, answers) && !notes) return;
+    if (confirm("Clear all answers on this interview?")) { setAnswers({}); setNotes(""); lsDel(K_DRAFT); setToast("Cleared"); }
+  }
+  function deleteRec(id) { setRecs((r) => r.filter((x) => x.id !== id)); setToast("Analysis deleted"); go("interview"); }
+  function copyRec(r) { navigator.clipboard?.writeText(recToMd(r)).then(() => setToast("Copied as text")).catch(() => setToast("Copy failed")); }
+
+  function exportData() {
+    const data = { app: "tabany-discovery", version: 2, exportedAt: new Date().toISOString(), config: cfg, records: recs };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "tabany-discovery-backup.json"; a.click(); URL.revokeObjectURL(a.href);
+    setToast("Backup downloaded");
+  }
+  function importData(e) {
+    const f = e.target.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const d = JSON.parse(rd.result);
+        if (Array.isArray(d.config)) setCfg(d.config);
+        if (Array.isArray(d.records)) setRecs(d.records);
+        setSettingsOpen(false); go("log"); setToast("Imported");
+      } catch { setToast("That file couldn't be read"); }
+    };
+    rd.readAsText(f); e.target.value = "";
+  }
+
+  /* editor updaters */
+  const setSecTitle = (si, v) => setCfg((c) => c.map((s, i) => (i === si ? { ...s, title: v } : s)));
+  const setQField = (si, qi, field, v) => setCfg((c) => c.map((s, i) => (i === si ? { ...s, q: s.q.map((q, j) => (j === qi ? { ...q, [field]: v } : q)) } : s)));
+  const addQ = (si) => setCfg((c) => c.map((s, i) => (i === si ? { ...s, q: [...s.q, { id: "q_" + rid(), label: "New question", hint: "", type: "textarea", ph: "" }] } : s)));
+  const delQ = (si, qi) => setCfg((c) => c.map((s, i) => (i === si ? { ...s, q: s.q.filter((_, j) => j !== qi) } : s)));
+  const addSec = () => setCfg((c) => [...c, { id: "s_" + rid(), title: "New section", q: [{ id: "q_" + rid(), label: "New question", hint: "", type: "textarea", ph: "" }] }]);
+  const delSec = (si) => { if (confirm("Delete this whole section?")) setCfg((c) => c.filter((_, i) => i !== si)); };
+  const resetCfg = () => { if (confirm("Reset all questions to the tabany defaults? Saved analyses are kept.")) { setCfg(clone(DEFAULTS)); setToast("Questions reset"); } };
+
+  const current = recs.find((r) => r.id === selectedId);
+
+  return (
+    <>
+      <header className="hdr">
+        <div className="hdr-in">
+          <div className="logo">
+            <span className="wordmark">tabany<span className="dot">.</span></span>
+            <span className="div" />
+            <span className="sub">AI Discovery</span>
+          </div>
+          <div className="hdr-r">
+            <nav>
+              <button className={"tab" + (view === "interview" ? " on" : "")} onClick={() => go("interview")}>Interview</button>
+              <button className={"tab" + (view === "log" || view === "analysis" ? " on" : "")} onClick={() => go("log")}>
+                Log {recs.length > 0 && <span className="pip">{recs.length}</span>}
+              </button>
+              <button className={"tab" + (view === "questions" ? " on" : "")} onClick={() => go("questions")}>Questions</button>
+            </nav>
+            <button className="gear" title="Settings" aria-label="Settings" onClick={() => setSettingsOpen(true)}><GearIcon /></button>
+          </div>
+        </div>
+      </header>
+
+      <div className="wrap">
+        {/* INTERVIEW */}
+        {view === "interview" && (
+          <section className="view">
+            <div className="hero">
+              <div className="eyebrow">Discovery interview</div>
+              <h1>Capture what you heard. Get AI opportunities back.</h1>
+              <p>Run through whatever the conversation allows — every question is optional, so skip freely when you're short on time. The more friction, repetition and manual work you capture, the sharper the opportunities tabany finds.</p>
+              <div className="note">◆ <span><b>No required fields.</b> Even a department plus one pain point is enough to generate.</span></div>
+            </div>
+
+            {cfg.map((sec, i) => (
+              <div className={"sec" + (collapsed[sec.id] ? " collapsed" : "")} key={sec.id}>
+                <div className="sec-h" onClick={() => toggleSec(sec.id)}>
+                  <span className="ix">{String(i + 1).padStart(2, "0")}</span>
+                  <span className="nm">{sec.title}</span>
+                  <span className="chev">▾</span>
+                </div>
+                {!collapsed[sec.id] && (
+                  <div className="sec-b">
+                    {sec.q.map((q) => (
+                      <div className={"q" + (q.wide ? " wide" : "")} key={q.id}>
+                        <label>{q.label}</label>
+                        {q.hint && <span className="hint">{q.hint}</span>}
+                        {q.type === "text"
+                          ? <input value={answers[q.id] || ""} placeholder={q.ph || ""} onChange={(e) => setAns(q.id, e.target.value)} />
+                          : <textarea value={answers[q.id] || ""} placeholder={q.ph || ""} onChange={(e) => setAns(q.id, e.target.value)} />}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+
+            <div className={"sec notes-sec" + (collapsed.__notes ? " collapsed" : "")}>
+              <div className="sec-h" onClick={() => toggleSec("__notes")}>
+                <span className="ix">✎</span>
+                <span className="nm">Open notes</span>
+                <span className="meta">anything the questions missed</span>
+                <span className="chev">▾</span>
+              </div>
+              {!collapsed.__notes && (
+                <div className="sec-b">
+                  <div className="q wide">
+                    <label>Quotes, side comments, observations — capture anything useful that didn't fit a question.</label>
+                    <textarea value={notes} placeholder={"\u201CWe lose two days every month just reconciling that spreadsheet\u2026\u201D"} onChange={(e) => setNotes(e.target.value)} />
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* ANALYSIS */}
+        {view === "analysis" && (
+          <section className="view">
+            {loading ? (
+              <div className="scan">
+                <div className="bars"><span /><span /><span /><span /><span /></div>
+                <div className="t">Reading the interview · mapping opportunities…</div>
+              </div>
+            ) : genError ? (
+              <div className="empty">
+                <div className="em" />
+                <h3>Couldn't generate that one</h3>
+                <p>{genError}</p>
+                <button className="btn primary" onClick={() => go("interview")}>Back to the interview</button>
+              </div>
+            ) : current ? (
+              <>
+                <div className="a-bar">
+                  <div><div className="a-kicker">Opportunity Analysis</div></div>
+                  <div className="a-tools">
+                    <button className="iconbtn" onClick={() => copyRec(current)}>⧉ Copy</button>
+                    <button className="iconbtn danger" onClick={() => deleteRec(current.id)}>Delete</button>
+                  </div>
+                </div>
+                <h2 className="a-dept">{deptOf(current)}</h2>
+                {teamOf(current) && <div className="a-team">{teamOf(current)}</div>}
+                <div className="summary">{current.analysis.departmentSummary}</div>
+                <div className="readout">
+                  <div className="gauge"><div className="gl">Overall impact</div><div className="gv" style={{ color: gaugeCol(current.analysis.overall?.impact, false) }}>{current.analysis.overall?.impact || "—"}</div></div>
+                  <div className="gauge"><div className="gl">Build complexity</div><div className="gv" style={{ color: gaugeCol(current.analysis.overall?.complexity, true) }}>{current.analysis.overall?.complexity || "—"}</div></div>
+                  <div className="gauge"><div className="gl">Est. time saved</div><div className="gv" style={{ color: "var(--brand-ink)" }}>{current.analysis.overall?.timeSaved || "—"}</div></div>
+                </div>
+                <div className="seclabel">AI Opportunities</div>
+                {(current.analysis.opportunities || []).map((o, i) => (
+                  <div className="opp" key={i}>
+                    <div className="opp-h">
+                      <div className="opp-n">{i + 1}</div>
+                      <div><h3 className="opp-t">{o.title}</h3><p className="opp-w">{o.what}</p></div>
+                    </div>
+                    <div className="opp-b">
+                      {o.addresses?.length > 0 && <div className="addr">{o.addresses.map((x, j) => <span className="tagp" key={j}>{x}</span>)}</div>}
+                      {o.approach && <div className="how"><b>How:</b> {o.approach}</div>}
+                      <div className="chips">
+                        <span className={"chip " + impClass(o.impact)}><span className="k">Impact</span><span className="v">{o.impact}</span></span>
+                        <span className={"chip " + cpxClass(o.complexity)}><span className="k">Complexity</span><span className="v">{o.complexity}</span></span>
+                        {o.timeSaved && <span className="chip time"><span className="k">Time saved</span><span className="v">{o.timeSaved}</span></span>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {current.analysis.overall?.priority && (
+                  <div className="start"><span className="sl">Where to start</span>{current.analysis.overall.priority}</div>
+                )}
+              </>
+            ) : (
+              <div className="empty">
+                <div className="em" /><h3>Nothing selected</h3>
+                <p>Pick an analysis from the Log, or run a new interview.</p>
+                <button className="btn primary" onClick={() => go("interview")}>Start an interview</button>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* LOG */}
+        {view === "log" && (
+          <section className="view">
+            {recs.length === 0 ? (
+              <div className="empty">
+                <div className="em" /><h3>No analyses yet</h3>
+                <p>Run a discovery interview and your results collect here — one card per department.</p>
+                <button className="btn primary" onClick={() => go("interview")}>Start an interview</button>
+              </div>
+            ) : (
+              <>
+                <div className="a-kicker">Discovery log</div>
+                <h1 className="viewtitle">{recs.length} {recs.length === 1 ? "department" : "departments"} analyzed</h1>
+                <div className="loggrid">
+                  {recs.map((r) => (
+                    <button className="card" key={r.id} onClick={() => { setSelectedId(r.id); go("analysis"); }}>
+                      <div className="cd">{deptOf(r)}</div>
+                      {teamOf(r) && <div className="ct">{teamOf(r)}</div>}
+                      <div className="cm"><span className="b">{(r.analysis.opportunities || []).length} opps</span> {new Date(r.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+
+        {/* QUESTIONS EDITOR */}
+        {view === "questions" && (
+          <section className="view">
+            <div className="a-kicker">Question library</div>
+            <h1 className="viewtitle">Tune the questions</h1>
+            <p style={{ fontSize: 14, color: "var(--muted)", maxWidth: "62ch", lineHeight: 1.6, margin: "0 0 4px" }}>
+              Edit anything, drop sections you never use, or add ones for a specific client. Changes save automatically and apply to every new interview. The open-notes box is always there and isn't listed here.
+            </p>
+            <div className="ed-tools">
+              <button className="btn primary" onClick={addSec}>+ Add section</button>
+              <button className="btn ghost" onClick={resetCfg}>Reset to defaults</button>
+            </div>
+            {cfg.map((sec, si) => (
+              <div className="ed-sec" key={sec.id}>
+                <div className="ed-sec-h">
+                  <input value={sec.title} placeholder="Section title" onChange={(e) => setSecTitle(si, e.target.value)} />
+                  <button className="xbtn" title="Delete section" onClick={() => delSec(si)}>✕</button>
+                </div>
+                {sec.q.map((q, qi) => (
+                  <div className="ed-q" key={q.id}>
+                    <input value={q.label} placeholder="Question" onChange={(e) => setQField(si, qi, "label", e.target.value)} />
+                    <input value={q.hint || ""} placeholder="Hint (optional)" onChange={(e) => setQField(si, qi, "hint", e.target.value)} />
+                    <select value={q.type} onChange={(e) => setQField(si, qi, "type", e.target.value)}>
+                      <option value="textarea">Long</option>
+                      <option value="text">Short</option>
+                    </select>
+                    <button className="xbtn" title="Delete question" onClick={() => delQ(si, qi)}>✕</button>
+                  </div>
+                ))}
+                <button className="addq" onClick={() => addQ(si)}>+ Add question</button>
+              </div>
+            ))}
+          </section>
+        )}
+      </div>
+
+      {/* generate bar */}
+      {view === "interview" && (
+        <div className="gobar">
+          <div className="gobar-in">
+            <div className="status">All optional · your answers save automatically as you type.</div>
+            <button className="clr" onClick={clearAnswers}>Clear answers</button>
+            <button className="go" onClick={generate} disabled={loading}>◆ Generate analysis</button>
+          </div>
+        </div>
+      )}
+
+      {/* settings */}
+      {settingsOpen && (
+        <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) setSettingsOpen(false); }}>
+          <div className="modal" role="dialog" aria-modal="true">
+            <div className="modal-h"><h2>Settings</h2><button aria-label="Close" onClick={() => setSettingsOpen(false)}>✕</button></div>
+            <div className="modal-b">
+              <h4>AI analysis</h4>
+              <p>The Anthropic API key is held on the server (the <code>ANTHROPIC_API_KEY</code> environment variable), so anyone who opens this site can generate without entering anything. Set it in <code>.env.local</code> for local dev, or in your host's environment variables when deployed.</p>
+              <h4 style={{ marginTop: 22, paddingTop: 20, borderTop: "1px solid var(--line-2)" }}>Your data</h4>
+              <p>Interviews and custom questions are saved in this browser. Export a backup to keep them safe or move them to another device; import to restore.</p>
+              <div className="keyrow">
+                <button className="btn" onClick={exportData}>Export backup</button>
+                <button className="btn" onClick={() => fileRef.current?.click()}>Import</button>
+                <input ref={fileRef} type="file" accept="application/json" style={{ display: "none" }} onChange={importData} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast && <div className="toast">{toast}</div>}
+    </>
+  );
+}
